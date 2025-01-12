@@ -52,7 +52,7 @@ int raw_socket(int protocol) {
 }
 
 // Function to send ICMP request
-void icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
+void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
     char buffer[64];
     memset(buffer, 0, sizeof(buffer));
 
@@ -64,7 +64,7 @@ void icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
         icmp->checksum = 0;
         icmp->un.echo.id = htons(id);
         icmp->un.echo.sequence = htons(sequence);
-        icmp->checksum = calculate_checksum(buffer, sizeof(buffer));
+        icmp->checksum = checksum(buffer, sizeof(buffer));
     } else {
         // ICMP header for IPv6
         struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)buffer;
@@ -83,7 +83,7 @@ void icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
 }
 
 // Function to receive ICMP reply
-int icmp_reply(int sock, int id, int protocol, double *rtt) {
+int receive_icmp_reply(int sock, int id, int protocol, double *rtt) {
     char buffer[1024];
     struct sockaddr_storage sender;
     socklen_t sender_len = sizeof(sender);
@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    int sock = create_raw_socket(protocol);
+    int sock = raw_socket(protocol);
 
     // Setup destination address
     struct sockaddr_in dest4;
