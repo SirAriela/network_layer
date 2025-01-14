@@ -13,7 +13,12 @@
 #include <poll.h>
 #include <float.h>
 
-// Function to calculate checksum
+// Function prototypes
+unsigned short checksum(void *data, int length);
+int create_raw_socket(int protocol);
+void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence);
+int receive_icmp_reply(int sock, int id, int protocol, double *rtt);
+
 unsigned short checksum(void *data, int length) {
     unsigned short *ptr = data;
     unsigned long sum = 0;
@@ -34,8 +39,7 @@ unsigned short checksum(void *data, int length) {
     return ~sum;
 }
 
-// Function to create a raw socket based on protocol
-int raw_socket(int protocol) {
+int create_raw_socket(int protocol) {
     int sock;
     if (protocol == 4) {
         sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -51,13 +55,11 @@ int raw_socket(int protocol) {
     return sock;
 }
 
-// Function to send ICMP request
 void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
     char buffer[64];
     memset(buffer, 0, sizeof(buffer));
 
     if (protocol == 4) {
-        // ICMP header for IPv4
         struct icmphdr *icmp = (struct icmphdr *)buffer;
         icmp->type = ICMP_ECHO; // Echo Request
         icmp->code = 0;
@@ -66,14 +68,12 @@ void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence)
         icmp->un.echo.sequence = htons(sequence);
         icmp->checksum = checksum(buffer, sizeof(buffer));
     } else {
-        // ICMP header for IPv6
         struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)buffer;
         icmp6->icmp6_type = ICMP6_ECHO_REQUEST;
         icmp6->icmp6_code = 0;
         icmp6->icmp6_cksum = 0;
         icmp6->icmp6_id = htons(id);
         icmp6->icmp6_seq = htons(sequence);
-        // No checksum calculation here as kernel often handles it
     }
 
     if (sendto(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)dest,
@@ -82,7 +82,6 @@ void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence)
     }
 }
 
-// Function to receive ICMP reply
 int receive_icmp_reply(int sock, int id, int protocol, double *rtt) {
     char buffer[1024];
     struct sockaddr_storage sender;
@@ -120,34 +119,34 @@ int receive_icmp_reply(int sock, int id, int protocol, double *rtt) {
     return 1;
 }
 
-// Main function
 int main(int argc, char *argv[]) {
     int opt;
     char *address = NULL;
-    int count = 4; // Default: 4 pings
-    int flood = 0; // Default: no flood mode
+    int count = -1; // Default: no count specified
+    int flood = 0;  // Default: no flood mode
     int protocol = 4; // Default: IPv4
 
+    // Parse command-line arguments
     while ((opt = getopt(argc, argv, "a:t:c:f")) != -1) {
         switch (opt) {
-            case 'a': // Target IP address
+            case 'a':
                 address = optarg;
                 break;
-            case 't': // Protocol (4 for IPv4, 6 for IPv6)
+            case 't':
                 protocol = atoi(optarg);
                 if (protocol != 4 && protocol != 6) {
                     fprintf(stderr, "Error: Protocol must be 4 (IPv4) or 6 (IPv6).\n");
                     return EXIT_FAILURE;
                 }
                 break;
-            case 'c': // Number of pings
+            case 'c':
                 count = atoi(optarg);
                 if (count <= 0) {
                     fprintf(stderr, "Error: Count must be a positive integer.\n");
                     return EXIT_FAILURE;
                 }
                 break;
-            case 'f': // Flood mode
+            case 'f':
                 flood = 1;
                 break;
             default:
@@ -156,12 +155,24 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Check if address is provided
     if (!address) {
         fprintf(stderr, "Error: Target address is required (-a <address>).\n");
         return EXIT_FAILURE;
     }
 
-    int sock = raw_socket(protocol);
+    // Set default count if not provided
+    if (count == -1) {
+        if (flood) {
+            count = -1; // Infinite mode
+            printf("Flood mode activated with infinite packets. Press Ctrl+C to stop.\n");
+        } else {
+            count = 4; // Default to 4 packets
+        }
+    }
+
+    // Create raw socket
+    int sock = create_raw_socket(protocol);
 
     // Setup destination address
     struct sockaddr_in dest4;
@@ -186,11 +197,17 @@ int main(int argc, char *argv[]) {
         dest = &dest6;
     }
 
+    // Start ping loop
+    printf("Pinging %s with 64 bytes of data:\n", address);
+
     int id = getpid() & 0xFFFF; // Use process ID as identifier
     int packets_sent = 0, packets_received = 0;
     double rtt_min = DBL_MAX, rtt_max = 0, rtt_sum = 0;
 
-    for (int i = 0; i < count; i++) {
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+    for (int i = 0; count == -1 || i < count; i++) {
         send_icmp_request(sock, dest, protocol, id, i);
         packets_sent++;
 
@@ -202,18 +219,28 @@ int main(int argc, char *argv[]) {
             rtt_sum += rtt;
             if (rtt < rtt_min) rtt_min = rtt;
             if (rtt > rtt_max) rtt_max = rtt;
+
+            printf("64 bytes from %s: icmp_seq=%d ttl=64 time=%.3fms\n", address, i + 1, rtt);
+        } else {
+            printf("Request timeout for icmp_seq=%d\n", i + 1);
         }
 
         if (!flood) {
-            sleep(1);
+            sleep(1); // Add a delay if not in flood mode
         }
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+    double total_time = (end_time.tv_sec - start_time.tv_sec) * 1000.0 +
+                        (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+
     // Print statistics
     printf("\n--- %s ping statistics ---\n", address);
-    printf("%d packets transmitted, %d received, %.1f%% packet loss\n",
+    printf("%d packets transmitted, %d received, %.1f%% packet loss, time %.2fms\n",
            packets_sent, packets_received,
-           ((packets_sent - packets_received) / (double)packets_sent) * 100.0);
+           ((packets_sent - packets_received) / (double)packets_sent) * 100.0,
+           total_time);
     if (packets_received > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n",
                rtt_min, rtt_sum / packets_received, rtt_max);
