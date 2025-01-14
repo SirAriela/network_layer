@@ -19,6 +19,7 @@ int create_raw_socket(int protocol);
 void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence);
 int receive_icmp_reply(int sock, int id, int protocol, double *rtt);
 
+//check sum calculation
 unsigned short checksum(void *data, int length) {
     unsigned short *ptr = data;
     unsigned long sum = 0;
@@ -39,12 +40,18 @@ unsigned short checksum(void *data, int length) {
     return ~sum;
 }
 
+//create a raw socket
 int create_raw_socket(int protocol) {
     int sock;
+    // Create a raw socket of the specified protocol
     if (protocol == 4) {
         sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    } else {
+    } else if (protocol == 6) {
         sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+    }
+    else {
+        fprintf(stderr, "Error: Invalid protocol.\n");
+        exit(EXIT_FAILURE);
     }
 
     if (sock < 0) {
@@ -55,10 +62,11 @@ int create_raw_socket(int protocol) {
     return sock;
 }
 
+//send the icmp request
 void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence) {
     char buffer[64];
     memset(buffer, 0, sizeof(buffer));
-
+    // Create ICMP header
     if (protocol == 4) {
         struct icmphdr *icmp = (struct icmphdr *)buffer;
         icmp->type = ICMP_ECHO; // Echo Request
@@ -67,13 +75,17 @@ void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence)
         icmp->un.echo.id = htons(id);
         icmp->un.echo.sequence = htons(sequence);
         icmp->checksum = checksum(buffer, sizeof(buffer));
-    } else {
+    } else if (protocol == 6) {
         struct icmp6_hdr *icmp6 = (struct icmp6_hdr *)buffer;
         icmp6->icmp6_type = ICMP6_ECHO_REQUEST;
         icmp6->icmp6_code = 0;
         icmp6->icmp6_cksum = 0;
         icmp6->icmp6_id = htons(id);
         icmp6->icmp6_seq = htons(sequence);
+    }
+    else {
+        fprintf(stderr, "Error: Invalid protocol.\n");
+        exit(EXIT_FAILURE);
     }
 
     if (sendto(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)dest,
@@ -82,6 +94,7 @@ void send_icmp_request(int sock, void *dest, int protocol, int id, int sequence)
     }
 }
 
+//receive the icmp reply
 int receive_icmp_reply(int sock, int id, int protocol, double *rtt) {
     char buffer[1024];
     struct sockaddr_storage sender;
@@ -130,9 +143,11 @@ int main(int argc, char *argv[]) {
     while ((opt = getopt(argc, argv, "a:t:c:f")) != -1) {
         switch (opt) {
             case 'a':
+                // will get the ip address
                 address = optarg;
                 break;
             case 't':
+                // will get the protocol
                 protocol = atoi(optarg);
                 if (protocol != 4 && protocol != 6) {
                     fprintf(stderr, "Error: Protocol must be 4 (IPv4) or 6 (IPv6).\n");
@@ -140,6 +155,7 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'c':
+                // how many times to send the icmp request
                 count = atoi(optarg);
                 if (count <= 0) {
                     fprintf(stderr, "Error: Count must be a positive integer.\n");
@@ -147,6 +163,7 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'f':
+                // flood mode
                 flood = 1;
                 break;
             default:
@@ -187,7 +204,7 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
         dest = &dest4;
-    } else {
+    } else if(protocol == 6) {
         memset(&dest6, 0, sizeof(dest6));
         dest6.sin6_family = AF_INET6;
         if (inet_pton(AF_INET6, address, &dest6.sin6_addr) <= 0) {
@@ -196,11 +213,16 @@ int main(int argc, char *argv[]) {
         }
         dest = &dest6;
     }
+    else {
+        fprintf(stderr, "Error: Invalid protocol.\n");
+        return EXIT_FAILURE;
+    }
 
     // Start ping loop
     printf("Pinging %s with 64 bytes of data:\n", address);
 
     int id = getpid() & 0xFFFF; // Use process ID as identifier
+    //parameters for statistics
     int packets_sent = 0, packets_received = 0;
     double rtt_min = DBL_MAX, rtt_max = 0, rtt_sum = 0;
 
@@ -216,7 +238,9 @@ int main(int argc, char *argv[]) {
 
         if (reply == 1) {
             packets_received++;
+            //saves the total time of the rtt
             rtt_sum += rtt;
+            //updates what is the new min\max
             if (rtt < rtt_min) rtt_min = rtt;
             if (rtt > rtt_max) rtt_max = rtt;
 
@@ -224,6 +248,7 @@ int main(int argc, char *argv[]) {
         } else {
             printf("Request timeout for icmp_seq=%d\n", i + 1);
         }
+
 
         if (!flood) {
             sleep(1); // Add a delay if not in flood mode
