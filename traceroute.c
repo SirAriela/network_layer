@@ -138,6 +138,82 @@ int receive_icmp_reply(int sock, int id, int protocol, double *rtt, char *sender
     return 0; // Unrecognized ICMP packet
 }
 
-int main(){
-    
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <address> <protocol (4 or 6)>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    char *address = argv[1];
+    int protocol = atoi(argv[2]);
+
+    if (protocol != 4 && protocol != 6) {
+        fprintf(stderr, "Protocol must be 4 (IPv4) or 6 (IPv6)\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // יצירת socket
+    int sock = create_raw_socket(protocol);
+
+    // הגדרת היעד
+    struct sockaddr_in dest4;
+    struct sockaddr_in6 dest6;
+    void *dest;
+
+    if (protocol == 4) {
+        memset(&dest4, 0, sizeof(dest4));
+        dest4.sin_family = AF_INET;
+        if (inet_pton(AF_INET, address, &dest4.sin_addr) <= 0) {
+            fprintf(stderr, "Invalid IPv4 address: %s\n", address);
+            exit(EXIT_FAILURE);
+        }
+        dest = &dest4;
+    } else {
+        memset(&dest6, 0, sizeof(dest6));
+        dest6.sin6_family = AF_INET6;
+        if (inet_pton(AF_INET6, address, &dest6.sin6_addr) <= 0) {
+            fprintf(stderr, "Invalid IPv6 address: %s\n", address);
+            exit(EXIT_FAILURE);
+        }
+        dest = &dest6;
+    }
+
+    int id = getpid() & 0xFFFF;
+
+    printf("Tracing route to %s over a maximum of %d hops:\n\n", address, MAX_HOPS);
+
+    for (int ttl = 1; ttl <= MAX_HOPS; ttl++) {
+        // הגדרת TTL
+        if (protocol == 4) {
+            if (setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+                perror("setsockopt failed");
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            if (setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &ttl, sizeof(ttl)) < 0) {
+                perror("setsockopt failed");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // שליחת בקשה
+        send_icmp_request(sock, dest, protocol, id, ttl);
+
+        // קבלת תשובה
+        char sender_ip[INET6_ADDRSTRLEN];
+        double rtt;
+        int result = receive_icmp_reply(sock, id, protocol, &rtt, sender_ip, ttl);
+
+        if (result == 1) { // Time Exceeded
+            printf("%2d  %s  %.3f ms\n", ttl, sender_ip, rtt);
+        } else if (result == 2) { // Echo Reply
+            printf("%2d  %s  %.3f ms (destination reached)\n", ttl, sender_ip, rtt);
+            break;
+        } else {
+            printf("%2d  *\n", ttl); // Timeout
+        }
+    }
+
+    close(sock);
+    return 0;
 }
